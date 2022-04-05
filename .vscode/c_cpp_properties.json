@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "../linux-imx_modref/include",
+                "../linux-imx_modref/include/**",
+                "../linux-imx_modref/arch/arm64/include",
+                "../linux-imx_modref/arch/arm64/include/**"
+            ],
+            "defines": [],
+            "compilerPath": "/opt/pae-imx-base/0.0-hardknott/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-gcc",
+            "cStandard": "c89",
+            "intelliSenseMode": "linux-gcc-arm64"
+        }
+    ],
+    "version": 4
+}
