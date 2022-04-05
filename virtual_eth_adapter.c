@@ -1,5 +1,5 @@
 /*!
- * \file rpmsg_ivshmem_adapter.c
+ * \file virtual_eth_adapter.c
  * \author D. Anderson
  * \brief This kernel module wraps ivshmem endpoint functionality and exports
  * an interface so other kernel code can use it
@@ -36,7 +36,7 @@
 
 typedef unsigned long spin_lock_saved_state_t;
 
-struct rpmsg_ivshmem_adapter_eptdev {
+struct virtual_eth_adapter_eptdev {
 	struct rpmsg_device *rpdev;
 	struct rpmsg_endpoint *ept;
 	struct miscdevice mdev;
@@ -45,22 +45,14 @@ struct rpmsg_ivshmem_adapter_eptdev {
 	int flags;
 };
 
-#define mdev_to_eptdev(d) container_of(d, struct rpmsg_ivshmem_adapter_eptdev, mdev)
-
-/* Iface for other kernel code */
-int rpmsg_ivshmem_adapter_test (void)
-{
-	pr_info ("rpmsg_ivshmem_adapter_test()\n");
-	return 0;
-}
-EXPORT_SYMBOL(rpmsg_ivshmem_adapter_test);
+#define mdev_to_eptdev(d) container_of(d, struct virtual_eth_adapter_eptdev, mdev)
 
 
 /* miscdevice interface */
-static ssize_t rpmsg_ivshmem_adapter_eptdev_read(struct file *filp, char __user *buf,
+static ssize_t virtual_eth_adapter_eptdev_read(struct file *filp, char __user *buf,
 										size_t len, loff_t *f_pos)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
+	struct virtual_eth_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
 	iovec_t vec[2];
 	unsigned count, i;
@@ -115,10 +107,10 @@ out:
 	return ret;
 }
 
-static ssize_t rpmsg_ivshmem_adapter_eptdev_write(struct file *filp, const char __user *buf,
+static ssize_t virtual_eth_adapter_eptdev_write(struct file *filp, const char __user *buf,
 										 size_t len, loff_t *f_pos)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
+	struct virtual_eth_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
 	struct rpmsg_device *rpdev = eptdev->rpdev;
 	void *kbuf;
 	int ret;
@@ -136,9 +128,9 @@ static ssize_t rpmsg_ivshmem_adapter_eptdev_write(struct file *filp, const char 
 }
 
 
-static unsigned int rpmsg_ivshmem_adapter_eptdev_poll(struct file *filp, poll_table *wait)
+static unsigned int virtual_eth_adapter_eptdev_poll(struct file *filp, poll_table *wait)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
+	struct virtual_eth_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
 	struct rpmsg_cbuf *cbuf;
 	unsigned int mask = 0;
 
@@ -158,12 +150,12 @@ static unsigned int rpmsg_ivshmem_adapter_eptdev_poll(struct file *filp, poll_ta
 
 
 /* RPMSG functions */
-static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int len,
+static int virtual_eth_adapter_cb(struct rpmsg_device *rpdev, void *data, int len,
 							void *priv, u32 src)
 {
 	struct rpmsg_cbuf *console = to_ivshm_console(rpdev->ept);
 	size_t count, room = rpmsg_cbuf_space_avail(console);
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
+	struct virtual_eth_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
 	size_t room_cbuf = rpmsg_cbuf_space_avail(cbuf);
 
@@ -192,15 +184,15 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 	return 0;
 }
 
-static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
+static int virtual_eth_adapter_probe(struct rpmsg_device *rpdev)
 {
-	pr_alert ("rpmsg_ivshmem_adapter probed!\n");
+	pr_alert ("virtual_eth_adapter probed!\n");
 	struct rpmsg_channel_info chinfo = {
 		.src = rpdev->src,
 		.dst = RPMSG_ADDR_ANY
 	};
 	struct device_node *np = rpdev->dev.of_node;
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev;
+	struct virtual_eth_adapter_eptdev *eptdev;
 	struct ivshm_ept_param ept_param = { 0 };
 	struct rpmsg_cbuf *cbuf;
 	struct rpmsg_cbuf *console;
@@ -238,7 +230,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 			 rpdev->dst, ept_param.id, ept_param.bufsize);
 
 	/* Create endpoint */
-	rpdev->ept = rpmsg_create_ept(rpdev, rpmsg_ivshmem_adapter_cb, &ept_param, chinfo);
+	rpdev->ept = rpmsg_create_ept(rpdev, virtual_eth_adapter_cb, &ept_param, chinfo);
 
 	if (IS_ERR(rpdev->ept)) {
 		ret = PTR_ERR(rpdev->ept);
@@ -299,10 +291,10 @@ free_console:
 	return ret;
 }
 
-static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
+static void virtual_eth_adapter_remove(struct rpmsg_device *rpdev)
 {
 	struct rpmsg_cbuf *console = to_ivshm_console(rpdev->ept);
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
+	struct virtual_eth_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
 
 	dev_dbg(&rpdev->dev, "--> %s : ept %p\n", __func__, rpdev->ept);
 
@@ -317,25 +309,25 @@ static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 	vfree(eptdev->cbuf.buf);
 	kfree(eptdev);
 
-	pr_alert ("rpmsg_ivshmem_adapter removed!\n");
+	pr_alert ("virtual_eth_adapter removed!\n");
 }
 
-static const struct of_device_id rpmsg_ivshmem_adapter_of_match[] = {
-	{ .compatible = "rpmsg_ivshmem_adapter" },
+static const struct of_device_id virtual_eth_adapter_of_match[] = {
+	{ .compatible = "virtual_eth_adapter" },
 	{}
 };
-MODULE_DEVICE_TABLE(of, rpmsg_ivshmem_adapter_of_match);
+MODULE_DEVICE_TABLE(of, virtual_eth_adapter_of_match);
 
-static struct rpmsg_driver rpmsg_ivshmem_adapter_driver = {
+static struct rpmsg_driver virtual_eth_adapter_driver = {
 	.drv = {
 		.name   = KBUILD_MODNAME,
 		.owner  = THIS_MODULE,
-		.of_match_table = rpmsg_ivshmem_adapter_of_match,
+		.of_match_table = virtual_eth_adapter_of_match,
 	},
-	.probe      = rpmsg_ivshmem_adapter_probe,
-	.remove     = rpmsg_ivshmem_adapter_remove,
+	.probe      = virtual_eth_adapter_probe,
+	.remove     = virtual_eth_adapter_remove,
 };
-module_rpmsg_driver(rpmsg_ivshmem_adapter_driver);
+module_rpmsg_driver(virtual_eth_adapter_driver);
 
 MODULE_AUTHOR("Antoine Bouyer <antoine.bouyer@nxp.com>");
 MODULE_DESCRIPTION("NXP rpmsg device driver for LK console");

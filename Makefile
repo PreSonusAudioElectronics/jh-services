@@ -10,6 +10,9 @@ obj-m += rpmsg-console.o rpmsg-rpc.o
 # adapt ivshmem for other kernel modules
 obj-m += rpmsg_ivshmem_adapter.o
 
+# virtual ethernet adapter
+obj-m += virtual_eth_adapter.o
+
 CFLAGS_ivshmem-pci.o := -DIVSHM_V2
 CFLAGS_rpmsg-services.o := -I${KDIR}/drivers/rpmsg
 
