@@ -4,6 +4,7 @@
 *.mod.c
 *.ko
 *.swp
+*.d
 **/*ctags*
 .vscode/settings.json
 Module.symvers

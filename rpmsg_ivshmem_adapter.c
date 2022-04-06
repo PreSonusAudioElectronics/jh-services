@@ -8,6 +8,8 @@
  * 
  */
 
+#define DEBUG 1
+
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -56,8 +58,8 @@ int rpmsg_ivshmem_adapter_test (void)
 EXPORT_SYMBOL(rpmsg_ivshmem_adapter_test);
 
 
-/* miscdevice interface */
-static ssize_t rpmsg_ivshmem_adapter_eptdev_read(struct file *filp, char __user *buf,
+
+static ssize_t rpmsg_ivshmem_adapter_eptdev_read(struct file *filp, char *buf,
 										size_t len, loff_t *f_pos)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
@@ -174,7 +176,8 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 	count = rpmsg_cbuf_write(console, data, len);
 	WARN_ON(count != len);
 
-	sysfs_notify(&rpdev->dev.kobj, NULL, "console");
+	// TODO: kernel-level notify?
+	// sysfs_notify(&rpdev->dev.kobj, NULL, "console");
 
 	if (len > room_cbuf)
 		rpmsg_cbuf_read(cbuf, NULL, len - room);
@@ -270,6 +273,8 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 		goto free_eptdev;
 
 	dev_dbg(&rpdev->dev, "got minor %d\n", eptdev->mdev.minor);
+
+	pr_info ("foo\n");
 
 	/* Prepare circular buffer */
 	cbuf = &eptdev->cbuf;
