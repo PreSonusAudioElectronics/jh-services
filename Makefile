@@ -7,6 +7,9 @@ ivshmem-y := ivshmem-pci.o ivshmem-pipe.o ivshmem-cbuf.o ivshmem-endpoint.o ivsh
 ivshmem-y += rpmsg-services.o
 obj-m += rpmsg-console.o rpmsg-rpc.o
 
+# adapt ivshmem for other kernel modules
+obj-m += rpmsg_ivshmem_adapter.o
+
 CFLAGS_ivshmem-pci.o := -DIVSHM_V2
 CFLAGS_rpmsg-services.o := -I${KDIR}/drivers/rpmsg
 

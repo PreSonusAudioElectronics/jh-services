@@ -4,5 +4,6 @@
 *.mod.c
 *.ko
 *.swp
+*.d
 Module.symvers
 modules.order
