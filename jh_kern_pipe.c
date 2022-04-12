@@ -98,7 +98,66 @@ EXPORT_SYMBOL_GPL(jh_kern_pipe_unregister_pipe);
 
 struct jh_kern_pipe *jh_kern_pipe_get_pipe_by_name (const char *name)
 {
+	struct list_head *it;
+	struct jh_kern_pipe *it_pipe;
+
+	if (!name)
+		return NULL;
+
+	list_for_each (it, &jh_kern_pipe_list)
+	{
+		it_pipe = list_entry(it, struct jh_kern_pipe, list);
+		if (0 == strncmp(it_pipe->name, name, MAXCOMPLEN) )
+		{
+			return it_pipe;
+		}
+	}
+
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(jh_kern_pipe_get_pipe_by_name);
 
+void jh_kern_pipe_print_all_pipes (void)
+{
+	struct list_head *it;
+	struct jh_kern_pipe *it_pipe;
+
+	pr_info ("jh_kern_pipe list:\n");
+	list_for_each (it, &jh_kern_pipe_list)
+	{
+		it_pipe = list_entry(it, struct jh_kern_pipe, list);
+		if (it_pipe->name)
+		{
+			pr_info ("	%s\n", it_pipe->name);
+		}
+	}
+}
+EXPORT_SYMBOL(jh_kern_pipe_print_all_pipes);
+
+int jh_kern_pipe_register_callback (struct jh_kern_pipe *pipe, jh_kern_pipe_cb_t callback, void *priv_data)
+{
+	if (!pipe)
+		return -EINVAL;
+	
+	if (pipe->rx_callback)
+	{
+		pr_err ("%s: pipe already has a registered callback!\n", __FUNCTION__);
+		return -EPERM;
+	}
+	
+	pipe->rx_callback = callback;
+	pipe->priv_data = priv_data;
+	return 0;
+}
+EXPORT_SYMBOL(jh_kern_pipe_register_callback);
+
+int jh_kern_pipe_unregister_callback (struct jh_kern_pipe *pipe)
+{
+	if (!pipe)
+		return -EINVAL;
+	
+	pipe->rx_callback = NULL;
+	pipe->priv_data = NULL;
+	return 0;
+}
+EXPORT_SYMBOL(jh_kern_pipe_unregister_callback);

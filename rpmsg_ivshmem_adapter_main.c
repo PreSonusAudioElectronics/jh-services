@@ -28,6 +28,7 @@
 #include "ivshmem-iovec.h"
 #include "jh_kern_pipe.h"
 
+//TODO: get this from devicetree
 #define PIPE_NAME "rpmsg_ivshmem_adapter"
 
 #define MIN(x,y) ((x) < (y) ? x : y)
