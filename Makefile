@@ -9,6 +9,7 @@ obj-m += rpmsg-console.o rpmsg-rpc.o
 
 # adapt ivshmem for other kernel modules
 obj-m += rpmsg_ivshmem_adapter.o
+rpmsg_ivshmem_adapter-y := rpmsg_ivshmem_adapter_main.o jh_kern_pipe.o
 
 # virtual ethernet adapter
 obj-m += virtual_eth_adapter.o

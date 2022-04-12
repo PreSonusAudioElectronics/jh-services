@@ -26,6 +26,9 @@
 
 #include "ivshmem-rpmsg.h"
 #include "ivshmem-iovec.h"
+#include "jh_kern_pipe.h"
+
+#define PIPE_NAME "rpmsg_ivshmem_adapter"
 
 #define MIN(x,y) ((x) < (y) ? x : y)
 #define MAX(x,y) ((x) > (y) ? x : y)
@@ -195,13 +198,19 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 	return 0;
 }
 
+static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
+{
+	pr_alert ("%s\n", __FUNCTION__);
+	return 0;
+}
+
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 {
-	pr_alert ("rpmsg_ivshmem_adapter probed!\n");
 	struct rpmsg_channel_info chinfo = {
 		.src = rpdev->src,
 		.dst = RPMSG_ADDR_ANY
 	};
+
 	struct device_node *np = rpdev->dev.of_node;
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev;
 	struct ivshm_ept_param ept_param = { 0 };
@@ -210,11 +219,40 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	unsigned val;
 	size_t cbuf_size = IVHSM_CONSOLE_BUFFER_SIZE;
 	int ret;
+	struct jh_kern_pipe * kernPipe;
+
+	pr_alert ("rpmsg_ivshmem_adapter probed, porra!\n");
+
+	// Create and register a jh_kern_pipe
+	kernPipe = kzalloc (sizeof(*kernPipe), GFP_KERNEL);
+	if (!kernPipe)
+	{
+		pr_err ("%s: could not allocate jh_kern_pipe!\n", __FUNCTION__);
+		return -ENOMEM;
+	}
+
+	kernPipe->name = PIPE_NAME;
+	kernPipe->send = pipeSend;
+
+	ret = jh_kern_pipe_register_pipe (kernPipe);
+	if (ret)
+	{
+		pr_alert ("%s: failed to register pipe!\n", __FUNCTION__);
+		goto free_kern_pipe;
+	}
+	pr_alert ("%s: kernel pipe registered\n", __FUNCTION__);
+
+
+
+
 
 	/* Prepare console logger */
 	console = kzalloc(sizeof(*console), GFP_KERNEL);
 	if (!console)
-		return -ENOMEM;
+	{
+		ret = -ENOMEM;
+		goto unreg_kern_pipe;
+	}
 
 	console->size = IVHSM_CONSOLE_BUFFER_SIZE;
 	console->head = 0;
@@ -274,8 +312,6 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	dev_dbg(&rpdev->dev, "got minor %d\n", eptdev->mdev.minor);
 
-	pr_info ("foo\n");
-
 	/* Prepare circular buffer */
 	cbuf = &eptdev->cbuf;
 	cbuf->size = cbuf_size;
@@ -300,6 +336,10 @@ free_ept:
 free_console:
 	vfree(console->buf);
 	kfree(console);
+unreg_kern_pipe:
+	jh_kern_pipe_unregister_pipe (kernPipe);
+free_kern_pipe:
+	kfree(kernPipe);
 
 	return ret;
 }
