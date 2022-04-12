@@ -10,8 +10,7 @@
 
 #define MAXCOMPLEN (256)
 
-LIST_HEAD(jh_kern_pipe_list);
-EXPORT_SYMBOL_GPL(jh_kern_pipe_list);
+static LIST_HEAD(jh_kern_pipe_list);
 
 static struct list_head * find_pipe (struct list_head * list_to_search, struct jh_kern_pipe *pipe)
 {

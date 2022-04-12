@@ -202,8 +202,21 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 
 static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 {
-	pr_alert ("%s\n", __FUNCTION__);
-	return 0;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
+	struct rpmsg_device *rpdev = eptdev->rpdev;
+
+	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
+
+	if (!buf)
+		return -EINVAL;
+	
+	if (!eptdev)
+	{
+		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
+		return -EINVAL;
+	}
+
+	return rpmsg_send(rpdev->ept, (void*)buf, len + 1);
 }
 
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
@@ -328,6 +341,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	eptdev->rpdev = rpdev;
 	eptdev->ept = rpdev->ept;
 	dev_set_drvdata(&rpdev->dev, eptdev);
+	kernPipe->priv_data = eptdev;
 
 	return ret;
 

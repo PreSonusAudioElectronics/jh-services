@@ -4,8 +4,6 @@
 
 #include <linux/list.h>
 
-extern struct list_head jh_kern_pipe_list;
-
 struct jh_kern_pipe;
 
 typedef void (*jh_kern_pipe_cb_t)(char * buf, int len, void *priv_data);
