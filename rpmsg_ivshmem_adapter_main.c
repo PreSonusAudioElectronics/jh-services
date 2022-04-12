@@ -48,6 +48,7 @@ struct rpmsg_ivshmem_adapter_eptdev {
 	wait_queue_head_t readq;
 	struct rpmsg_cbuf cbuf;
 	int flags;
+	struct jh_kern_pipe *kern_pipe;
 };
 
 #define mdev_to_eptdev(d) container_of(d, struct rpmsg_ivshmem_adapter_eptdev, mdev)
@@ -245,7 +246,6 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 
 
-
 	/* Prepare console logger */
 	console = kzalloc(sizeof(*console), GFP_KERNEL);
 	if (!console)
@@ -305,6 +305,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	eptdev->mdev.name = np->name;
 	eptdev->mdev.fops = NULL;
 	eptdev->mdev.parent = &rpdev->dev;
+	eptdev->kern_pipe = kernPipe;
 
 	ret = misc_register(&eptdev->mdev);
 	if (ret)
@@ -360,6 +361,9 @@ static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 	 * rpmsg_destroy_ept(rpdev->ept); */
 	misc_deregister(&eptdev->mdev);
 	vfree(eptdev->cbuf.buf);
+
+	jh_kern_pipe_unregister_pipe (eptdev->kern_pipe);
+	kfree (eptdev->kern_pipe);
 	kfree(eptdev);
 
 	pr_alert ("rpmsg_ivshmem_adapter removed!\n");
