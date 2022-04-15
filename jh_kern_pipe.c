@@ -7,6 +7,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/delay.h>
+#include <linux/mutex.h>
 
 #define MAXCOMPLEN (256)
 
@@ -69,7 +70,7 @@ int jh_kern_pipe_register_pipe (struct jh_kern_pipe *pipe)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(jh_kern_pipe_register_pipe);
+EXPORT_SYMBOL(jh_kern_pipe_register_pipe);
 
 int jh_kern_pipe_unregister_pipe (struct jh_kern_pipe *pipe)
 {
@@ -93,7 +94,7 @@ int jh_kern_pipe_unregister_pipe (struct jh_kern_pipe *pipe)
 	pr_err ("%s: could not find pipe!\n", __FUNCTION__);
 	return -EINVAL;
 }
-EXPORT_SYMBOL_GPL(jh_kern_pipe_unregister_pipe);
+EXPORT_SYMBOL(jh_kern_pipe_unregister_pipe);
 
 struct jh_kern_pipe *jh_kern_pipe_get_pipe_by_name (const char *name)
 {
@@ -114,7 +115,7 @@ struct jh_kern_pipe *jh_kern_pipe_get_pipe_by_name (const char *name)
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(jh_kern_pipe_get_pipe_by_name);
+EXPORT_SYMBOL(jh_kern_pipe_get_pipe_by_name);
 
 void jh_kern_pipe_print_all_pipes (void)
 {
@@ -142,6 +143,12 @@ int jh_kern_pipe_register_callback (struct jh_kern_pipe *pipe, jh_kern_pipe_cb_t
 	{
 		pr_err ("%s: pipe already has a registered callback!\n", __FUNCTION__);
 		return -EPERM;
+	}
+
+	if (!pipe->rxbuf || (pipe->rxbuf_size == 0) )
+	{
+		pr_err ("%s: pipe has no receive buffer so callback cannot be registered\n", __func__);
+		return -ENOMEM;
 	}
 	
 	pipe->rx_callback = callback;

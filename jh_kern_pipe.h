@@ -15,6 +15,8 @@ struct jh_kern_pipe
     jh_kern_pipe_cb_t rx_callback;
     void *priv_data;
     struct list_head list;
+    char *rxbuf;
+    unsigned rxbuf_size;
 };
 
 int jh_kern_pipe_register_pipe (struct jh_kern_pipe *pipe);
