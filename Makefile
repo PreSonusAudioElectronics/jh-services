@@ -11,9 +11,6 @@ obj-m += rpmsg-console.o rpmsg-rpc.o
 obj-m += rpmsg_ivshmem_adapter.o
 rpmsg_ivshmem_adapter-y := rpmsg_ivshmem_adapter_main.o jh_kern_pipe.o
 
-# virtual ethernet adapter
-obj-m += virtual_eth_adapter.o
-
 CFLAGS_ivshmem-pci.o := -DIVSHM_V2
 CFLAGS_rpmsg-services.o := -I${KDIR}/drivers/rpmsg
 

@@ -23,7 +23,6 @@
 #include <linux/ctype.h>
 #include <linux/mutex.h>
 #include <linux/vmalloc.h>
-#include <linux/kthread.h>
 
 #include "ivshmem-rpmsg.h"
 #include "ivshmem-iovec.h"
@@ -40,82 +39,37 @@
 #define IVHSM_CONSOLE_BUFFER_SIZE (512 * 1024)
 #endif
 
-#define to_ivshm_console(x) ((struct rpmsg_cbuf *)(x->priv))
-
 typedef unsigned long spin_lock_saved_state_t;
 
 struct rpmsg_ivshmem_adapter_eptdev {
 	struct rpmsg_device *rpdev;
 	struct rpmsg_endpoint *ept;
 	struct miscdevice mdev;
-	wait_queue_head_t readq;
 	struct rpmsg_cbuf cbuf;
 	int flags;
 	struct jh_kern_pipe *kern_pipe;
-	struct task_struct *kthread;
 };
 
-#define mdev_to_eptdev(d) container_of(d, struct rpmsg_ivshmem_adapter_eptdev, mdev)
-
-/* Iface for other kernel code */
-int rpmsg_ivshmem_adapter_test (void)
+static int rpmsg_ivshmem_adapter_read (struct jh_kern_pipe *pipe, char *buf, int len)
 {
-	pr_info ("rpmsg_ivshmem_adapter_test()\n");
-	return 0;
-}
-EXPORT_SYMBOL(rpmsg_ivshmem_adapter_test);
-
-
-
-
-static unsigned int rpmsg_ivshmem_adapter_eptdev_poll(struct file *filp, poll_table *wait)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
-	struct rpmsg_cbuf *cbuf;
-	unsigned int mask = 0;
-
-	if (!eptdev || !eptdev->ept)
-		return POLLERR;
-
-	poll_wait(filp, &eptdev->readq, wait);
-
-	cbuf = &eptdev->cbuf;
-	if (cbuf->avail > 0) {
-		mask |= POLLIN | POLLRDNORM; /* readable */
-		return mask;
-	}
-
-	return mask;
-}
-
-
-static int rpmsg_ivshmem_adapter_rx_thread_func (void *pv)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev *)pv;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
-	struct jh_kern_pipe *kern_pipe = eptdev->kern_pipe;
-	char * rxbuf = kern_pipe->rxbuf;
-	unsigned rxbufsize = kern_pipe->rxbuf_size;
-	size_t chars_read;
-	size_t in_buffer;
+	size_t chars_read, in_buffer, to_read;
 	iovec_t iovec;
 
-	pr_alert ("%s: starting rx thread loop for %s\n", __func__, eptdev->kern_pipe->name);
+	pr_alert ("%s: pipe: %p, buf: %p, len: %d\n", __func__, pipe, buf, len);
 
-	while (!kthread_should_stop() )
+	if (!pipe || !buf)
+		return -EINVAL;
+
+	chars_read = 0;
+	in_buffer = rpmsg_cbuf_get_buffer (cbuf, &iovec);
+	if (in_buffer > 0)
 	{
-		if (kern_pipe->rx_callback)
-		{
-			in_buffer = rpmsg_cbuf_get_buffer (cbuf, &iovec);
-			chars_read = rpmsg_cbuf_read (cbuf, rxbuf, rxbufsize);
-			kern_pipe->rx_callback (rxbuf, chars_read, kern_pipe->priv_data);
-		}
-
-		wait_event_interruptible (eptdev->readq, 
-			cbuf->avail > 0 || kthread_should_stop() );
+		to_read = MIN (in_buffer, len);
+		chars_read = rpmsg_cbuf_read (cbuf, buf, to_read);
 	}
-
-	do_exit(0);
+	return chars_read;
 }
 
 
@@ -125,6 +79,7 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
+	struct jh_kern_pipe *kern_pipe = eptdev->kern_pipe;
 	size_t room_cbuf = rpmsg_cbuf_space_avail(cbuf);
 	int discarded;
 	size_t count;
@@ -144,7 +99,7 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 	WARN_ON(count != len);
 
 	/* wake up any blocking processes waiting for data */
-	wake_up_interruptible(&eptdev->readq);
+	wake_up_interruptible (&kern_pipe->read_event_q);
 
 	return 0;
 }
@@ -153,6 +108,7 @@ static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
 	struct rpmsg_device *rpdev = eptdev->rpdev;
+	int status;
 
 	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
 
@@ -165,7 +121,12 @@ static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 		return -EINVAL;
 	}
 
-	return rpmsg_send(rpdev->ept, (void*)buf, len + 1);
+	status = rpmsg_send (rpdev->ept, (void*)buf, len + 1);
+
+	if (status)
+		return status;
+	else
+		return len;
 }
 
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
@@ -197,6 +158,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	kernPipe->name = PIPE_NAME;
 	kernPipe->send = pipeSend;
+	kernPipe->read = rpmsg_ivshmem_adapter_read;
 
 	ret = jh_kern_pipe_register_pipe (kernPipe);
 	if (ret)
@@ -216,14 +178,6 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	if (!ret)
 		ept_param.bufsize = (size_t)val;
 	
-	// Set rxbuf according to rpmsg buffer size
-	kernPipe->rxbuf = kzalloc (val + 1, GFP_KERNEL);
-	if (!kernPipe->rxbuf)
-	{
-		pr_err ("%s: failed to allocate rx buffer!\n", __func__);
-		goto unreg_kern_pipe;
-	}
-	kernPipe->rxbuf_size = val + 1;
 
 	dev_dbg(&rpdev->dev, "chnl: 0x%x -> 0x%x : id %d : bufsize %llu\n", rpdev->src,
 			 rpdev->dst, ept_param.id, ept_param.bufsize);
@@ -233,7 +187,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	if (IS_ERR(rpdev->ept)) {
 		ret = PTR_ERR(rpdev->ept);
-		goto free_rxbuf;
+		goto unreg_kern_pipe;
 	}
 
 	dev_dbg(&rpdev->dev, "rpmsg endpoint created at probe %p\n", rpdev->ept);
@@ -268,12 +222,11 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	cbuf->size = cbuf_size;
 	cbuf->buf = vmalloc(cbuf->size);
 	if (!cbuf->buf)
-		goto free_eptdev;
+		goto unreg_eptdev;
 
 	cbuf->tail = cbuf->head = 0;
 	spin_lock_init(&cbuf->lock);
 
-	init_waitqueue_head(&eptdev->readq);
 	eptdev->rpdev = rpdev;
 	eptdev->ept = rpdev->ept;
 	dev_set_drvdata(&rpdev->dev, eptdev);
@@ -286,31 +239,16 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	{
 		dev_dbg (&rpdev->dev, "thread name was truncated\n");
 	}
-	ret = 0;
-
-
-	eptdev->kthread = kthread_run (rpmsg_ivshmem_adapter_rx_thread_func, 
-		eptdev, namebuf);
-	if (eptdev->kthread)
-	{
-		dev_dbg (&rpdev->dev, "rx thread started for id 0x%x\n", ept_param.id);
-	}
-	else
-	{
-		dev_err (&rpdev->dev, "Failed to start RX thread for id 0x%x!\n", ept_param.id);
-		ret = -ENOMEM;
-		goto free_eptdev;
-	}
-	
+	ret = 0;	
 
 	return ret;
 
+unreg_eptdev:
+	misc_deregister (&eptdev->mdev);
 free_eptdev:
 	kfree(eptdev);
 free_ept:
 	rpmsg_destroy_ept(rpdev->ept);
-free_rxbuf:
-	kfree (kernPipe->rxbuf);
 unreg_kern_pipe:
 	jh_kern_pipe_unregister_pipe (kernPipe);
 free_kern_pipe:
@@ -322,16 +260,8 @@ free_kern_pipe:
 static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
-	struct jh_kern_pipe *kern_pipe = eptdev->kern_pipe;
-	int ret;
 
 	dev_dbg(&rpdev->dev, "--> %s : ept %p\n", __func__, rpdev->ept);
-
-	ret = kthread_stop (eptdev->kthread);
-	if (ret)
-	{
-		dev_dbg (&rpdev->dev, "failed to stop rx thread with: %d\n", ret);
-	}
 
 	/* Free console structure and associated buf */
 
@@ -341,8 +271,6 @@ static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 	misc_deregister(&eptdev->mdev);
 	vfree(eptdev->cbuf.buf);
 
-	if (kern_pipe->rxbuf)
-		kfree (kern_pipe->rxbuf);
 	jh_kern_pipe_unregister_pipe (eptdev->kern_pipe);
 	kfree (eptdev->kern_pipe);
 	kfree(eptdev);

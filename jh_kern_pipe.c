@@ -64,6 +64,8 @@ int jh_kern_pipe_register_pipe (struct jh_kern_pipe *pipe)
 		return -EINVAL;
 	}
 
+	init_waitqueue_head (&pipe->read_event_q);
+
 	pr_debug ("adding pipe \'%s\'\n", pipe->name);
 
 	list_add_tail (&pipe->list, &jh_kern_pipe_list);
@@ -143,12 +145,6 @@ int jh_kern_pipe_register_callback (struct jh_kern_pipe *pipe, jh_kern_pipe_cb_t
 	{
 		pr_err ("%s: pipe already has a registered callback!\n", __FUNCTION__);
 		return -EPERM;
-	}
-
-	if (!pipe->rxbuf || (pipe->rxbuf_size == 0) )
-	{
-		pr_err ("%s: pipe has no receive buffer so callback cannot be registered\n", __func__);
-		return -ENOMEM;
 	}
 	
 	pipe->rx_callback = callback;
