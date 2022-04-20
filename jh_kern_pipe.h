@@ -4,6 +4,7 @@
 
 #include <linux/list.h>
 #include <linux/wait.h>
+#include <linux/types.h>
 
 struct jh_kern_pipe;
 
@@ -14,6 +15,7 @@ struct jh_kern_pipe
 	const char *name;
 	int (*send) (struct jh_kern_pipe *pipe, const char *buf, int len);
 	int (*read) (struct jh_kern_pipe *pipe, char *buf, int len);
+	bool (*data_ready) (struct jh_kern_pipe *pipe);
 	jh_kern_pipe_cb_t rx_callback;
 	void *priv_data;
 	struct list_head list;

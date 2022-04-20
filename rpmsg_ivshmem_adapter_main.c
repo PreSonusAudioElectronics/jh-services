@@ -55,15 +55,18 @@ static int rpmsg_ivshmem_adapter_read (struct jh_kern_pipe *pipe, char *buf, int
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
 	size_t chars_read, in_buffer, to_read;
-	iovec_t iovec;
+	spin_lock_saved_state_t state;
 
-	pr_alert ("%s: pipe: %p, buf: %p, len: %d\n", __func__, pipe, buf, len);
+	// pr_alert ("%s: pipe: %p, buf: %p, len: %d\n", __func__, pipe, buf, len);
 
 	if (!pipe || !buf)
 		return -EINVAL;
 
 	chars_read = 0;
-	in_buffer = rpmsg_cbuf_get_buffer (cbuf, &iovec);
+	spin_lock_irqsave (&cbuf->lock, state);
+	in_buffer = cbuf->avail;
+	spin_unlock_irqrestore (&cbuf->lock, state);
+
 	if (in_buffer > 0)
 	{
 		to_read = MIN (in_buffer, len);
@@ -83,6 +86,8 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 	size_t room_cbuf = rpmsg_cbuf_space_avail(cbuf);
 	int discarded;
 	size_t count;
+
+	pr_alert ("%s: %d bytes\n", __func__, len);
 
 	if (len > room_cbuf)
 	{
@@ -129,6 +134,13 @@ static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 		return len;
 }
 
+static bool rpmsg_ivshmem_adapter_data_ready (struct jh_kern_pipe *pipe)
+{
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
+	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
+	return cbuf->avail > 0 ? true : false;
+}
+
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 {
 	struct rpmsg_channel_info chinfo = {
@@ -159,6 +171,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	kernPipe->name = PIPE_NAME;
 	kernPipe->send = pipeSend;
 	kernPipe->read = rpmsg_ivshmem_adapter_read;
+	kernPipe->data_ready = rpmsg_ivshmem_adapter_data_ready;
 
 	ret = jh_kern_pipe_register_pipe (kernPipe);
 	if (ret)
