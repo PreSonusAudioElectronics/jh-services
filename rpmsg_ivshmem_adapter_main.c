@@ -23,6 +23,9 @@
 #include <linux/ctype.h>
 #include <linux/mutex.h>
 #include <linux/vmalloc.h>
+#include <linux/mutex.h>
+#include <linux/types.h>
+#include <linux/kthread.h>
 
 #include "ivshmem-rpmsg.h"
 #include "ivshmem-iovec.h"
@@ -48,11 +51,26 @@ struct rpmsg_ivshmem_adapter_eptdev {
 	struct rpmsg_cbuf cbuf;
 	int flags;
 	struct jh_kern_pipe *kern_pipe;
+
+	wait_queue_head_t start_tx_event;
+	struct mutex tx_mutex;
+
+	// data to send
+	const char *thread_txbuf;
+
+	// length of data to send
+	int thread_tx_len;
+	bool tx_in_progress;
+
+	struct task_struct *tx_thread_handle;
 };
+
+static int tx_thread_func (void *pv);
+
 
 static int rpmsg_ivshmem_adapter_read (struct jh_kern_pipe *pipe, char *buf, int len)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
 	size_t chars_read, in_buffer, to_read;
 	spin_lock_saved_state_t state;
@@ -111,7 +129,7 @@ static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int 
 
 static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
 	struct rpmsg_device *rpdev = eptdev->rpdev;
 	int status;
 
@@ -126,8 +144,88 @@ static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 		return -EINVAL;
 	}
 
+	mutex_lock (&(eptdev->tx_mutex));
+	if (eptdev->tx_in_progress)
+	{
+		status = -EBUSY;
+		goto unlock;
+	}
+	
+	eptdev->tx_in_progress = true;
+	pipe->nonblock_tx_completed = false;
+
 	status = rpmsg_send (rpdev->ept, (void*)buf, len + 1);
 
+	eptdev->tx_in_progress = false;
+
+unlock:
+	mutex_unlock (&(eptdev->tx_mutex));
+
+	if (status)
+		return status;
+	else
+		return len;
+}
+
+static int pipeSendNonBlock (struct jh_kern_pipe *pipe, const char * buf, int len)
+{
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
+	int status;
+	int gotLock = 0;
+
+	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
+
+	if (!buf)
+		return -EINVAL;
+	
+	if (!eptdev)
+	{
+		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
+		return -EINVAL;
+	}
+
+	gotLock = mutex_trylock (&eptdev->tx_mutex);
+
+	if (gotLock)
+	{
+		if (eptdev->tx_in_progress)
+		{
+			status = -EBUSY;
+			goto unlock;
+		}
+		
+		if (!eptdev->tx_thread_handle)
+		{
+			pr_alert ("starting tx thread..\n");
+			eptdev->tx_thread_handle = kthread_run (tx_thread_func, pipe, 
+				"rpmsg_ivshmem_adapter_tx_thread");
+			if (!eptdev->tx_thread_handle)
+			{
+				pr_err ("failed to create tx thread!\n");
+				status = -EFAULT;
+				goto unlock;
+			}
+			pr_alert ("tx thread running\n");
+		}
+
+		eptdev->tx_in_progress = true;
+		pipe->nonblock_tx_completed = false;
+		eptdev->thread_txbuf = buf;
+		eptdev->thread_tx_len = len;
+		wake_up_interruptible (&eptdev->start_tx_event);
+		status = 0;
+	}
+	else
+	{
+		// did not get lock so skip unlocking
+		status = -EBUSY;
+		goto exit;
+	}
+
+unlock:
+	mutex_unlock (&(eptdev->tx_mutex));
+
+exit:
 	if (status)
 		return status;
 	else
@@ -136,9 +234,51 @@ static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
 
 static bool rpmsg_ivshmem_adapter_data_ready (struct jh_kern_pipe *pipe)
 {
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
 	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
 	return cbuf->avail > 0 ? true : false;
+}
+
+static int tx_thread_func (void *pv)
+{
+	struct jh_kern_pipe *kern_pipe = (struct jh_kern_pipe *) pv;
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)kern_pipe->priv_data_impl;
+	struct rpmsg_device *rpdev = eptdev->rpdev;
+	int start_tx;
+	int status;
+
+	while (!kthread_should_stop ())
+	{
+		start_tx = wait_event_interruptible_timeout (eptdev->start_tx_event,
+			eptdev->tx_in_progress, 1000);
+
+		if (start_tx)
+		{
+			if (!eptdev->thread_txbuf || eptdev->thread_tx_len == 0)
+			{
+				pr_err ("Misconfigured transmit!\n");
+			}
+			else 
+			{
+				status = rpmsg_send (rpdev->ept, (void*)eptdev->thread_txbuf, eptdev->thread_tx_len + 1);
+
+				if (0 == status)
+				{
+					kern_pipe->nonblock_tx_completed = true;
+					wake_up_interruptible (&kern_pipe->tx_complete_event_q);
+					mutex_lock (&eptdev->tx_mutex);
+					eptdev->tx_in_progress = false;
+					mutex_unlock (&eptdev->tx_mutex);
+				}
+				else
+				{
+					pr_err ("rpmsg_send failed with: %d\n", status);
+				}
+			}
+		}
+	}
+
+	do_exit (0);
 }
 
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
@@ -170,8 +310,10 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	kernPipe->name = PIPE_NAME;
 	kernPipe->send = pipeSend;
+	kernPipe->send_nonblock = pipeSendNonBlock;
 	kernPipe->read = rpmsg_ivshmem_adapter_read;
 	kernPipe->data_ready = rpmsg_ivshmem_adapter_data_ready;
+	kernPipe->nonblock_tx_completed = false;
 
 	ret = jh_kern_pipe_register_pipe (kernPipe);
 	if (ret)
@@ -224,6 +366,13 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	eptdev->mdev.parent = &rpdev->dev;
 	eptdev->kern_pipe = kernPipe;
 
+	mutex_init (&(eptdev->tx_mutex));
+	eptdev->thread_tx_len = 0;
+	eptdev->thread_txbuf = NULL;
+	eptdev->tx_in_progress = false;
+	eptdev->tx_thread_handle = NULL;
+	init_waitqueue_head (&eptdev->start_tx_event);
+
 	ret = misc_register(&eptdev->mdev);
 	if (ret)
 		goto free_eptdev;
@@ -243,7 +392,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	eptdev->rpdev = rpdev;
 	eptdev->ept = rpdev->ept;
 	dev_set_drvdata(&rpdev->dev, eptdev);
-	kernPipe->priv_data = eptdev;
+	kernPipe->priv_data_impl = eptdev;
 
 	dev_dbg (&rpdev->dev, "starting rx thread..\n");
 	
@@ -311,86 +460,3 @@ module_rpmsg_driver(rpmsg_ivshmem_adapter_driver);
 MODULE_AUTHOR("Antoine Bouyer <antoine.bouyer@nxp.com>");
 MODULE_DESCRIPTION("NXP rpmsg device driver for LK console");
 MODULE_LICENSE("GPL v2");
-
-
-#if 0
-
-static ssize_t rpmsg_ivshmem_adapter_eptdev_write(struct file *filp, const char __user *buf,
-										 size_t len, loff_t *f_pos)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
-	struct rpmsg_device *rpdev = eptdev->rpdev;
-	void *kbuf;
-	int ret;
-
-	pr_debug("--> %s entry: send %lu bytes\n", __func__, len);
-
-	kbuf = memdup_user_nul(buf, len);
-	if (IS_ERR(kbuf))
-		return PTR_ERR(kbuf);
-
-	ret = rpmsg_send(rpdev->ept, kbuf, len + 1);
-
-	kfree(kbuf);
-	return (ret == 0) ? len : 0;
-}
-
-static ssize_t rpmsg_ivshmem_adapter_eptdev_read(struct file *filp, char *buf,
-										size_t len, loff_t *f_pos)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = mdev_to_eptdev(filp->private_data);
-	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
-	iovec_t vec[2];
-	unsigned count, i;
-	ssize_t ret;
-	size_t sz, remaining, offset;
-	unsigned long long num_chars;
-	loff_t iovec_ppos;
-
-	ret = wait_event_interruptible(eptdev->readq, cbuf->avail > 0);
-	if (ret)
-		goto out;
-
-	spin_lock(&cbuf->lock);
-	count = rpmsg_cbuf_get_buffer(cbuf, vec);
-	if (count ==  0) {
-		ret = 0;
-		goto out;
-	}
-
-	spin_unlock(&cbuf->lock);
-
-	offset = 0;
-	remaining = len;
-
-	for (i = 0; i < count && remaining > 0; i++) {
-		sz = MIN(remaining, vec[i].iov_len);
-		iovec_ppos = (loff_t) (vec[i].iov_base - (void *)cbuf->buf);
-
-		ret = simple_read_from_buffer(buf + offset, sz, &iovec_ppos, cbuf->buf, cbuf->size);
-
-		if (ret > 0)
-			*f_pos += ret;
-		else
-			break;
-
-		BUG_ON(ret != sz);
-
-		/* Update cbuf pointers */
-		spin_lock(&cbuf->lock);
-		num_chars = cbuf->tail + ret;
-		cbuf->tail = do_div(num_chars, cbuf->size);
-		cbuf->avail -= ret;
-		remaining -= ret;
-		spin_unlock(&cbuf->lock);
-
-		offset += ret;
-	}
-
-	ret = (offset > 0) ? offset : ret;
-
-out:
-	return ret;
-}
-
-#endif

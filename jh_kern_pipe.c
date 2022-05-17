@@ -65,6 +65,7 @@ int jh_kern_pipe_register_pipe (struct jh_kern_pipe *pipe)
 	}
 
 	init_waitqueue_head (&pipe->read_event_q);
+	init_waitqueue_head (&pipe->tx_complete_event_q);
 
 	pr_debug ("adding pipe \'%s\'\n", pipe->name);
 
@@ -136,30 +137,3 @@ void jh_kern_pipe_print_all_pipes (void)
 }
 EXPORT_SYMBOL(jh_kern_pipe_print_all_pipes);
 
-int jh_kern_pipe_register_callback (struct jh_kern_pipe *pipe, jh_kern_pipe_cb_t callback, void *priv_data)
-{
-	if (!pipe)
-		return -EINVAL;
-	
-	if (pipe->rx_callback)
-	{
-		pr_err ("%s: pipe already has a registered callback!\n", __FUNCTION__);
-		return -EPERM;
-	}
-	
-	pipe->rx_callback = callback;
-	pipe->priv_data = priv_data;
-	return 0;
-}
-EXPORT_SYMBOL(jh_kern_pipe_register_callback);
-
-int jh_kern_pipe_unregister_callback (struct jh_kern_pipe *pipe)
-{
-	if (!pipe)
-		return -EINVAL;
-	
-	pipe->rx_callback = NULL;
-	pipe->priv_data = NULL;
-	return 0;
-}
-EXPORT_SYMBOL(jh_kern_pipe_unregister_callback);
