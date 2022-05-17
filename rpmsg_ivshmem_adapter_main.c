@@ -422,8 +422,18 @@ free_kern_pipe:
 static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
+	struct jh_kern_pipe *pipe = eptdev->kern_pipe;
+	int status;
 
 	dev_dbg(&rpdev->dev, "--> %s : ept %p\n", __func__, rpdev->ept);
+
+	if (eptdev->tx_thread_handle)
+	{
+		status = kthread_stop (eptdev->tx_thread_handle);
+		if (status)
+			pr_err ("%s: could not stop tx thread for eptdev %s with: %d\n",
+				__func__, pipe->name, status);
+	}
 
 	/* Free console structure and associated buf */
 
