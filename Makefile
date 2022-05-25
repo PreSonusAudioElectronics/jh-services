@@ -9,6 +9,10 @@ obj-m += rpmsg-console.o rpmsg-rpc.o
 
 # adapt ivshmem for other kernel modules
 obj-m += rpmsg_ivshmem_adapter.o
+<<<<<<< HEAD
+=======
+rpmsg_ivshmem_adapter-y := rpmsg_ivshmem_adapter_main.o jh_kern_pipe.o
+>>>>>>> tx_notification
 
 CFLAGS_ivshmem-pci.o := -DIVSHM_V2
 CFLAGS_rpmsg-services.o := -I${KDIR}/drivers/rpmsg

@@ -5,5 +5,10 @@
 *.ko
 *.swp
 *.d
+<<<<<<< HEAD
+=======
+**/*ctags*
+.vscode/settings.json
+>>>>>>> tx_notification
 Module.symvers
 modules.order
