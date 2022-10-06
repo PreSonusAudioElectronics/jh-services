@@ -64,8 +64,6 @@ int jh_kern_pipe_register_pipe (struct jh_kern_pipe *pipe)
 		return -EINVAL;
 	}
 
-	init_waitqueue_head (&pipe->read_event_q);
-	init_waitqueue_head (&pipe->tx_complete_event_q);
 
 	pr_debug ("adding pipe \'%s\'\n", pipe->name);
 

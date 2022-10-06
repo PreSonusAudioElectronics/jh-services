@@ -48,238 +48,91 @@ struct rpmsg_ivshmem_adapter_eptdev {
 	struct rpmsg_device *rpdev;
 	struct rpmsg_endpoint *ept;
 	struct miscdevice mdev;
-	struct rpmsg_cbuf cbuf;
 	int flags;
 	struct jh_kern_pipe *kern_pipe;
 
-	wait_queue_head_t start_tx_event;
-	struct mutex tx_mutex;
+	struct mutex cb_mutex; //protect cb and priv_data
 
-	// data to send
-	const char *thread_txbuf;
-
-	// length of data to send
-	int thread_tx_len;
-	bool tx_in_progress;
-
-	struct task_struct *tx_thread_handle;
+	jh_kern_pipe_cb_t cb; //callback for rx messages
+	void *priv_data;	//private data for callback
 };
 
-static int tx_thread_func (void *pv);
 
 
-static int rpmsg_ivshmem_adapter_read (struct jh_kern_pipe *pipe, char *buf, int len)
+static int pipe_send (struct jh_kern_pipe *pipe, const char * buf, int len)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
-	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
-	size_t chars_read, in_buffer, to_read;
-	spin_lock_saved_state_t state;
+	struct rpmsg_device *rpdev = eptdev->rpdev;
+	int status;
 
-	// pr_alert ("%s: pipe: %p, buf: %p, len: %d\n", __func__, pipe, buf, len);
+	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
 
-	if (!pipe || !buf)
+	if (!buf)
 		return -EINVAL;
-
-	chars_read = 0;
-	spin_lock_irqsave (&cbuf->lock, state);
-	in_buffer = cbuf->avail;
-	spin_unlock_irqrestore (&cbuf->lock, state);
-
-	if (in_buffer > 0)
+	
+	if (!eptdev)
 	{
-		to_read = MIN (in_buffer, len);
-		chars_read = rpmsg_cbuf_read (cbuf, buf, to_read);
+		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
+		return -EINVAL;
 	}
-	return chars_read;
+
+	
+	status = rpmsg_send (rpdev->ept, (void*)buf, len);
+
+	return status;
 }
 
+int pipe_set_rx_callback (struct jh_kern_pipe *pipe, void *priv_data, jh_kern_pipe_cb_t cb)
+{
+	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
+	
+	pr_alert("--> %s entry: set rx callback\n", __func__);
+
+	if (!eptdev)
+	{
+		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock (&(eptdev->cb_mutex));
+	
+	if (cb != NULL && eptdev->cb != NULL)
+	{
+		mutex_unlock (&(eptdev->cb_mutex));
+		pr_err ("%s: trying to overwrite callback\n", __func__);
+		return -EINVAL;		
+	}
+	eptdev->priv_data = priv_data;
+	eptdev->cb = cb;
+	mutex_unlock (&(eptdev->cb_mutex));
+	return 0;
+}
 
 /* RPMSG functions */
 static int rpmsg_ivshmem_adapter_cb(struct rpmsg_device *rpdev, void *data, int len,
 							void *priv, u32 src)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
-	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
-	struct jh_kern_pipe *kern_pipe = eptdev->kern_pipe;
-	size_t room_cbuf = rpmsg_cbuf_space_avail(cbuf);
-	int discarded;
-	size_t count;
-
-	pr_alert ("%s: %d bytes\n", __func__, len);
-
-	if (len > room_cbuf)
+	if (eptdev == NULL)
 	{
-		discarded = len - room_cbuf;
-		rpmsg_cbuf_read(cbuf, NULL, discarded);
-		pr_err ("%s: dropped %d bytes!\n", __func__, discarded );
+		pr_err ("%s: Race condition, callback called before driver fully initialized\n", __func__);
+		return 0;
+	}
+	struct jh_kern_pipe *kern_pipe = eptdev->kern_pipe;
+	if (kern_pipe == NULL)
+	{
+		pr_err ("%s: Fatal, eptdev is not initialized correctly\n", __func__);
+		return 0;
 	}
 
-	/* Save received data into cbuf */
-	count = rpmsg_cbuf_write(cbuf, data, len);
-
-	BUG_ON(cbuf->avail > cbuf->size);
-
-	WARN_ON(count != len);
-
-	/* wake up any blocking processes waiting for data */
-	wake_up_interruptible (&kern_pipe->read_event_q);
+	if (eptdev->cb)
+	{
+		eptdev->cb(kern_pipe, eptdev->priv_data, data, len);
+	}
 
 	return 0;
 }
 
-static int pipeSend (struct jh_kern_pipe *pipe, const char * buf, int len)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
-	struct rpmsg_device *rpdev = eptdev->rpdev;
-	int status;
-
-	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
-
-	if (!buf)
-		return -EINVAL;
-	
-	if (!eptdev)
-	{
-		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
-		return -EINVAL;
-	}
-
-	mutex_lock (&(eptdev->tx_mutex));
-	if (eptdev->tx_in_progress)
-	{
-		status = -EBUSY;
-		goto unlock;
-	}
-	
-	eptdev->tx_in_progress = true;
-	pipe->nonblock_tx_completed = false;
-
-	status = rpmsg_send (rpdev->ept, (void*)buf, len + 1);
-
-	eptdev->tx_in_progress = false;
-
-unlock:
-	mutex_unlock (&(eptdev->tx_mutex));
-
-	if (status)
-		return status;
-	else
-		return len;
-}
-
-static int pipeSendNonBlock (struct jh_kern_pipe *pipe, const char * buf, int len)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
-	int status;
-	int gotLock = 0;
-
-	pr_alert("--> %s entry: send %d bytes\n", __func__, len);
-
-	if (!buf)
-		return -EINVAL;
-	
-	if (!eptdev)
-	{
-		pr_err ("%s: no valid endpoint on that pipe!\n", __func__);
-		return -EINVAL;
-	}
-
-	gotLock = mutex_trylock (&eptdev->tx_mutex);
-
-	if (gotLock)
-	{
-		if (eptdev->tx_in_progress)
-		{
-			status = -EBUSY;
-			goto unlock;
-		}
-		
-		if (!eptdev->tx_thread_handle)
-		{
-			pr_alert ("starting tx thread..\n");
-			eptdev->tx_thread_handle = kthread_run (tx_thread_func, pipe, 
-				"rpmsg_ivshmem_adapter_tx_thread");
-			if (!eptdev->tx_thread_handle)
-			{
-				pr_err ("failed to create tx thread!\n");
-				status = -EFAULT;
-				goto unlock;
-			}
-			pr_alert ("tx thread running\n");
-		}
-
-		eptdev->tx_in_progress = true;
-		pipe->nonblock_tx_completed = false;
-		eptdev->thread_txbuf = buf;
-		eptdev->thread_tx_len = len;
-		wake_up_interruptible (&eptdev->start_tx_event);
-		status = 0;
-	}
-	else
-	{
-		// did not get lock so skip unlocking
-		status = -EBUSY;
-		goto exit;
-	}
-
-unlock:
-	mutex_unlock (&(eptdev->tx_mutex));
-
-exit:
-	if (status)
-		return status;
-	else
-		return len;
-}
-
-static bool rpmsg_ivshmem_adapter_data_ready (struct jh_kern_pipe *pipe)
-{
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)pipe->priv_data_impl;
-	struct rpmsg_cbuf *cbuf = &eptdev->cbuf;
-	return cbuf->avail > 0 ? true : false;
-}
-
-static int tx_thread_func (void *pv)
-{
-	struct jh_kern_pipe *kern_pipe = (struct jh_kern_pipe *) pv;
-	struct rpmsg_ivshmem_adapter_eptdev *eptdev = (struct rpmsg_ivshmem_adapter_eptdev*)kern_pipe->priv_data_impl;
-	struct rpmsg_device *rpdev = eptdev->rpdev;
-	int start_tx;
-	int status;
-
-	while (!kthread_should_stop ())
-	{
-		start_tx = wait_event_interruptible_timeout (eptdev->start_tx_event,
-			eptdev->tx_in_progress, 1000);
-
-		if (start_tx)
-		{
-			if (!eptdev->thread_txbuf || eptdev->thread_tx_len == 0)
-			{
-				pr_err ("Misconfigured transmit!\n");
-			}
-			else 
-			{
-				status = rpmsg_send (rpdev->ept, (void*)eptdev->thread_txbuf, eptdev->thread_tx_len + 1);
-
-				if (0 == status)
-				{
-					kern_pipe->nonblock_tx_completed = true;
-					wake_up_interruptible (&kern_pipe->tx_complete_event_q);
-					mutex_lock (&eptdev->tx_mutex);
-					eptdev->tx_in_progress = false;
-					mutex_unlock (&eptdev->tx_mutex);
-				}
-				else
-				{
-					pr_err ("rpmsg_send failed with: %d\n", status);
-				}
-			}
-		}
-	}
-
-	do_exit (0);
-}
 
 static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 {
@@ -291,12 +144,10 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	struct device_node *np = rpdev->dev.of_node;
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev;
 	struct ivshm_ept_param ept_param = { 0 };
-	struct rpmsg_cbuf *cbuf;
+	
 	unsigned val;
-	size_t cbuf_size = IVHSM_CONSOLE_BUFFER_SIZE;
 	int ret;
 	struct jh_kern_pipe * kernPipe;
-	char namebuf[THREADNAME_MAX_LEN];
 
 	pr_alert ("rpmsg_ivshmem_adapter probed, porra!\n");
 
@@ -307,21 +158,11 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 		pr_err ("%s: could not allocate jh_kern_pipe!\n", __FUNCTION__);
 		return -ENOMEM;
 	}
+	
+	kernPipe->name = np->name; //PIPE_NAME; //FIXME: should be np->name but we are only creating one of these so okay.
+	kernPipe->send = pipe_send;
+	kernPipe->set_rx_callback = pipe_set_rx_callback;
 
-	kernPipe->name = PIPE_NAME;
-	kernPipe->send = pipeSend;
-	kernPipe->send_nonblock = pipeSendNonBlock;
-	kernPipe->read = rpmsg_ivshmem_adapter_read;
-	kernPipe->data_ready = rpmsg_ivshmem_adapter_data_ready;
-	kernPipe->nonblock_tx_completed = false;
-
-	ret = jh_kern_pipe_register_pipe (kernPipe);
-	if (ret)
-	{
-		pr_alert ("%s: failed to register pipe!\n", __FUNCTION__);
-		goto free_kern_pipe;
-	}
-	pr_alert ("%s: kernel pipe registered\n", __FUNCTION__);
 
 	/* Retrieve information from device tree */
 	ret = of_property_read_u32(np, "id", &val);
@@ -342,7 +183,7 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	if (IS_ERR(rpdev->ept)) {
 		ret = PTR_ERR(rpdev->ept);
-		goto unreg_kern_pipe;
+		goto free_kern_pipe;
 	}
 
 	dev_dbg(&rpdev->dev, "rpmsg endpoint created at probe %p\n", rpdev->ept);
@@ -350,8 +191,6 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	dev_dbg(&rpdev->dev,
 			"chnl: 0x%x -> 0x%x : id %d - bufsize %llu - cbuf_size %zu\n",
 			rpdev->src, rpdev->dst, ept_param.id, ept_param.bufsize, cbuf_size);
-
-	dev_dbg(&rpdev->dev, "rpmsg endpoint created at probe %p\n", rpdev->ept);
 
 	/* Setup miscdevice */
 	eptdev = kzalloc(sizeof(*eptdev), GFP_KERNEL);
@@ -366,12 +205,9 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 	eptdev->mdev.parent = &rpdev->dev;
 	eptdev->kern_pipe = kernPipe;
 
-	mutex_init (&(eptdev->tx_mutex));
-	eptdev->thread_tx_len = 0;
-	eptdev->thread_txbuf = NULL;
-	eptdev->tx_in_progress = false;
-	eptdev->tx_thread_handle = NULL;
-	init_waitqueue_head (&eptdev->start_tx_event);
+	mutex_init (&(eptdev->cb_mutex));
+	eptdev->cb = NULL;
+	eptdev->priv_data = NULL;
 
 	ret = misc_register(&eptdev->mdev);
 	if (ret)
@@ -379,28 +215,21 @@ static int rpmsg_ivshmem_adapter_probe(struct rpmsg_device *rpdev)
 
 	dev_dbg(&rpdev->dev, "got minor %d\n", eptdev->mdev.minor);
 
-	/* Prepare circular buffer */
-	cbuf = &eptdev->cbuf;
-	cbuf->size = cbuf_size;
-	cbuf->buf = vmalloc(cbuf->size);
-	if (!cbuf->buf)
-		goto unreg_eptdev;
-
-	cbuf->tail = cbuf->head = 0;
-	spin_lock_init(&cbuf->lock);
 
 	eptdev->rpdev = rpdev;
 	eptdev->ept = rpdev->ept;
 	dev_set_drvdata(&rpdev->dev, eptdev);
 	kernPipe->priv_data_impl = eptdev;
 
-	dev_dbg (&rpdev->dev, "starting rx thread..\n");
-	
-	ret = snprintf (namebuf, THREADNAME_MAX_LEN, "rpmsg_ivshmem_rx_thread_%d", ept_param.id);
-	if (ret >= THREADNAME_MAX_LEN)
+
+	ret = jh_kern_pipe_register_pipe (kernPipe);
+	if (ret)
 	{
-		dev_dbg (&rpdev->dev, "thread name was truncated\n");
+		pr_alert ("%s: failed to register pipe!\n", __FUNCTION__);
+		goto unreg_eptdev;
 	}
+	pr_alert ("%s: kernel pipe registered\n", __FUNCTION__);
+
 	ret = 0;	
 
 	return ret;
@@ -411,10 +240,9 @@ free_eptdev:
 	kfree(eptdev);
 free_ept:
 	rpmsg_destroy_ept(rpdev->ept);
-unreg_kern_pipe:
-	jh_kern_pipe_unregister_pipe (kernPipe);
 free_kern_pipe:
 	kfree(kernPipe);
+
 
 	return ret;
 }
@@ -422,26 +250,14 @@ free_kern_pipe:
 static void rpmsg_ivshmem_adapter_remove(struct rpmsg_device *rpdev)
 {
 	struct rpmsg_ivshmem_adapter_eptdev *eptdev = dev_get_drvdata(&rpdev->dev);
-	struct jh_kern_pipe *pipe = eptdev->kern_pipe;
-	int status;
 
 	dev_dbg(&rpdev->dev, "--> %s : ept %p\n", __func__, rpdev->ept);
 
-	if (eptdev->tx_thread_handle)
-	{
-		status = kthread_stop (eptdev->tx_thread_handle);
-		if (status)
-			pr_err ("%s: could not stop tx thread for eptdev %s with: %d\n",
-				__func__, pipe->name, status);
-	}
-
-	/* Free console structure and associated buf */
 
 	/* Do not destroy endpoint here. This is handled by rpmsg framework as ept
 	 * is stored into rpdev->ept
 	 * rpmsg_destroy_ept(rpdev->ept); */
 	misc_deregister(&eptdev->mdev);
-	vfree(eptdev->cbuf.buf);
 
 	jh_kern_pipe_unregister_pipe (eptdev->kern_pipe);
 	kfree (eptdev->kern_pipe);
